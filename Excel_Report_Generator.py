@@ -2,6 +2,8 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 import openpyxl
+from openpyxl.styles import PatternFill
+import calendar
 
 def generate_excel_report(start_date, end_date, output_path, db_path='daily_accounting.db'):
     """
@@ -89,6 +91,9 @@ def generate_excel_report(start_date, end_date, output_path, db_path='daily_acco
                 # Format the Overall sheet
                 worksheet_overall = writer.sheets['Overall']
                 
+                # Freeze the first row (header row)
+                worksheet_overall.freeze_panes = 'A2'
+                
                 # Set Date column width
                 worksheet_overall.column_dimensions['A'].width = 12
                 
@@ -136,6 +141,58 @@ def generate_excel_report(start_date, end_date, output_path, db_path='daily_acco
                     # Format as percentage with 2 decimal places
                     worksheet_overall[cumulative_return_cell].number_format = '0.00%'
                 
+                # Add row highlighting for month-end and valuation days
+                light_blue_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
+                light_green_fill = PatternFill(start_color="B3E19A", end_color="B3E19A", fill_type="solid")
+                
+                # Process each row to determine highlighting
+                for row_idx, (date_str, row_data) in enumerate(df_overall.iterrows()):
+                    excel_row = row_idx + 2  # +2 because Excel is 1-based and we have a header row
+                    
+                    # Parse the date string
+                    try:
+                        date_obj = datetime.strptime(date_str, '%m/%d/%Y')
+                    except ValueError:
+                        continue  # Skip if date parsing fails
+                    
+                    # Check if this is the last day of the month
+                    is_month_end = False
+                    # Get the last day of this month
+                    last_day_of_month = calendar.monthrange(date_obj.year, date_obj.month)[1]
+                    if row_idx == len(df_overall) - 1:  # Last row in dataset
+                            is_month_end = True
+                    else:
+                        # Check if next date is in different month
+                        next_date_str = df_overall.index[row_idx + 1]
+                        try:
+                            next_date_obj = datetime.strptime(next_date_str, '%m/%d/%Y')
+                            if next_date_obj.month != date_obj.month or next_date_obj.year != date_obj.year:
+                                is_month_end = True
+                        except ValueError:
+                            pass
+                    
+                    # Check if this is a valuation day (Period Starting NAV changed from previous day)
+                    is_valuation_day = False
+                    if row_idx == 0:  # First row is always a valuation day
+                        is_valuation_day = True
+                    else:
+                        current_nav = row_data['Period Starting NAV']
+                        prev_nav = df_overall.iloc[row_idx - 1]['Period Starting NAV']
+                        if current_nav != prev_nav:
+                            is_valuation_day = True
+                    
+                    # Apply highlighting (valuation day takes precedence over month-end)
+                    if is_valuation_day:
+                        # Highlight entire row in light green
+                        for col_idx in range(len(df_overall.columns) + 1):  # +1 for the date column
+                            cell = worksheet_overall.cell(row=excel_row, column=col_idx + 1)
+                            cell.fill = light_green_fill
+                    elif is_month_end:
+                        # Highlight entire row in light blue
+                        for col_idx in range(len(df_overall.columns) + 1):  # +1 for the date column
+                            cell = worksheet_overall.cell(row=excel_row, column=col_idx + 1)
+                            cell.fill = light_blue_fill
+                
                 # Auto-adjust column widths and format numbers
                 for idx, col in enumerate(df_overall.columns):
                     max_length = max(
@@ -160,6 +217,9 @@ def generate_excel_report(start_date, end_date, output_path, db_path='daily_acco
             
             # Get the workbook and the worksheet for broker data
             worksheet_broker = writer.sheets['Brokerage Account']
+            
+            # Freeze the first row (header row)
+            worksheet_broker.freeze_panes = 'A2'
             
             # Store original P&L values for comparison
             original_pnl_values = df_broker['P&L'].copy()
@@ -241,6 +301,9 @@ def generate_excel_report(start_date, end_date, output_path, db_path='daily_acco
                 
                 # Format the Other Transactions sheet
                 worksheet_other = writer.sheets['Other Transactions']
+                
+                # Freeze the first row (header row)
+                worksheet_other.freeze_panes = 'A2'
                 
                 # Set Date column width
                 worksheet_other.column_dimensions['A'].width = 12

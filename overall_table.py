@@ -150,7 +150,7 @@ def build_overall_table(db_path: str = "daily_accounting.db") -> None:
         other_pl_amounts = {}
         overnight_amounts = {}
 
-    # Calculate Total Other (running total starting from $10,000 on 01/19/2023)
+    # Calculate Total Other (running total starting from on 01/19/2023)
     # First, get all unique dates from both broker and other transactions and sort them
     all_dates = set(row[0] for row in broker_rows)
     all_dates.update(other_amounts.keys())
@@ -170,9 +170,8 @@ def build_overall_table(db_path: str = "daily_accounting.db") -> None:
         # Get sum of all other transactions for this date
         daily_other_total = other_amounts.get(date_str, 0.0)
         
-        # Add daily total to running total (except for the start date where we set it to 10,000)
-        if current_date != start_date:
-            running_total_other += daily_other_total
+        # Add daily total to running total
+        running_total_other += daily_other_total
         
         total_other_by_date[date_str] = running_total_other
 

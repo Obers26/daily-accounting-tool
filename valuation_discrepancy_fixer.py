@@ -3,7 +3,7 @@
 Fund Value Updater Module
 
 This module provides functionality to check for discrepancies between expected
-and actual Start of Day Fund Values on valuation dates and creates correction
+and calculated Start of Day Fund Values on valuation dates and creates correction
 transactions as needed.
 """
 
@@ -51,7 +51,7 @@ def _get_first_month_dates(date_strings: list) -> set:
 
 def check_fund_value_discrepancies(db_path: str = "daily_accounting.db") -> list:
     """
-    Check for discrepancies between expected and actual Start of Day Fund Values
+    Check for discrepancies between expected and calculated Start of Day Fund Values
     on valuation dates.
     
     Returns:
@@ -117,9 +117,9 @@ def check_fund_value_discrepancies(db_path: str = "daily_accounting.db") -> list
             
             if _is_valuation_date(date_obj, extra_vals, first_month_dates):
                 # This is a valuation date - check for discrepancies
-                actual_start_of_day = start_of_day_values.get(date_str)
+                expected_start_of_day = start_of_day_values.get(date_str)
                 
-                if actual_start_of_day is None:
+                if expected_start_of_day is None:
                     continue
                 
                 # Find previous business day from database dates
@@ -134,18 +134,18 @@ def check_fund_value_discrepancies(db_path: str = "daily_accounting.db") -> list
                 prev_overnight = overnight_amounts.get(prev_day, 0.0)
                 
                 if prev_total_fund_value is not None:
-                    expected_start_of_day = prev_total_fund_value + prev_overnight
+                    calculated_start_of_day = prev_total_fund_value + prev_overnight
                     
                     # Check for discrepancy (use small tolerance for floating point comparison)
                     tolerance = 0.1  # 10 cents tolerance
-                    if abs(expected_start_of_day - actual_start_of_day) > tolerance:
-                        discrepancy_amount = actual_start_of_day - expected_start_of_day
+                    if abs(expected_start_of_day - calculated_start_of_day) > tolerance:
+                        discrepancy_amount = calculated_start_of_day - expected_start_of_day
                         
                         discrepancies.append({
                             'valuation_date': date_str,
                             'previous_day': prev_day,
                             'expected_start_of_day': expected_start_of_day,
-                            'actual_start_of_day': actual_start_of_day,
+                            'calculated_start_of_day': calculated_start_of_day,
                             'discrepancy_amount': discrepancy_amount
                         })
         
@@ -231,63 +231,89 @@ def update_fund_values(db_path: str = "daily_accounting.db", auto_confirm: bool 
     try:
         print("Checking for fund value discrepancies...")
         
-        discrepancies = check_fund_value_discrepancies(db_path)
+        # Import necessary modules for updating overall table
+        import overall_table
         
-        if not discrepancies:
-            print("✓ No fund value discrepancies found.")
-            return True
+        corrections_added = 0
+        max_iterations = 100  # Safety limit to prevent infinite loops
+        iteration = 0
         
-        print(f"\nFound {len(discrepancies)} fund value discrepancies requiring correction:")
-        
-        corrections_to_add = []
-        
-        for i, disc in enumerate(discrepancies, 1):
-            print(f"\n{i}. Valuation Date: {disc['valuation_date']}")
+        while iteration < max_iterations:
+            iteration += 1
+            
+            # Check for discrepancies with current database state
+            discrepancies = check_fund_value_discrepancies(db_path)
+            
+            if not discrepancies:
+                if corrections_added == 0:
+                    print("✓ No fund value discrepancies found.")
+                else:
+                    print(f"✓ All discrepancies corrected. Total corrections added: {corrections_added}")
+                return True
+            
+            # Process only the first discrepancy found
+            disc = discrepancies[0]
+            
+            print(f"\nFound discrepancy requiring correction:")
+            print(f"   Valuation Date: {disc['valuation_date']}")
             print(f"   Previous Day: {disc['previous_day']}")
             print(f"   Expected Start of Day Fund Value: ${disc['expected_start_of_day']:,.2f}")
-            print(f"   Actual Start of Day Fund Value: ${disc['actual_start_of_day']:,.2f}")
+            print(f"   Calculated Start of Day Fund Value: ${disc['calculated_start_of_day']:,.2f}")
             print(f"   Discrepancy: ${disc['discrepancy_amount']:,.2f}")
             print(f"   Proposed Correction Transaction:")
             print(f"     Date: {disc['previous_day']}")
-            print(f"     Amount: ${disc['discrepancy_amount']:,.2f}")
+            print(f"     Amount: ${-disc['discrepancy_amount']:,.2f}")
             print(f"     Account Description: Correction")
             print(f"     Transaction Description: Valuation Correction")
             print(f"     Counted in P&L: false")
             print(f"     Overnight: true")
             
+            # Ask for confirmation unless auto_confirm is True
+            add_correction = auto_confirm
             if not auto_confirm:
                 response = input(f"\n   Add this correction transaction? (y/N): ")
-                if response.lower() in ['y', 'yes']:
-                    corrections_to_add.append(disc)
-            else:
-                corrections_to_add.append(disc)
-        
-        if not corrections_to_add:
-            print("\nNo corrections were approved.")
-            return True
-        
-        # Add approved corrections
-        print(f"\nAdding {len(corrections_to_add)} correction transactions...")
-        
-        # Import necessary modules for updating overall table
-        import overall_table
-        
-        for disc in corrections_to_add:
-            success = add_correction_transaction(
-                disc['previous_day'], 
-                disc['discrepancy_amount'], 
-                db_path
-            )
+                add_correction = response.lower() in ['y', 'yes']
             
-            if success:
-                print(f"✓ Added correction transaction for {disc['previous_day']}: ${disc['discrepancy_amount']:,.2f}")
+            if add_correction:
+                # Add the correction transaction
+                success = add_correction_transaction(
+                    disc['previous_day'], 
+                    -disc['discrepancy_amount'], 
+                    db_path
+                )
+                
+                if success:
+                    corrections_added += 1
+                    print(f"✓ Added correction transaction for {disc['previous_day']}: ${-disc['discrepancy_amount']:,.2f}")
+                    
+                    # Rebuild overall table to reflect the new transaction
+                    print("   Updating overall table...")
+                    overall_table.build_overall_table(db_path)
+                    print("   ✓ Overall table updated.")
+                    
+                    # Continue to check for remaining discrepancies
+                    continue
+                else:
+                    print(f"✗ Failed to add correction transaction for {disc['previous_day']} (may already exist)")
+                    # If we couldn't add the transaction, break to avoid infinite loop
+                    break
             else:
-                print(f"✗ Failed to add correction transaction for {disc['previous_day']} (may already exist)")
+                print("   Correction declined.")
+                # If user declined this correction, check if there are more
+                if len(discrepancies) > 1:
+                    print(f"   Skipping this correction. {len(discrepancies) - 1} more discrepancies found.")
+                    # For now, we'll break here. In a more sophisticated version,
+                    # we could ask about each discrepancy individually
+                break
         
-        # Rebuild overall table to reflect the new transactions
-        print("\nUpdating overall table...")
-        overall_table.build_overall_table(db_path)
-        print("✓ Overall table updated successfully.")
+        if iteration >= max_iterations:
+            print(f"✗ Maximum iterations ({max_iterations}) reached. There may be remaining discrepancies.")
+            return False
+        
+        if corrections_added > 0:
+            print(f"\n✓ Process completed. Total corrections added: {corrections_added}")
+        else:
+            print("\n✓ Process completed. No corrections were added.")
         
         return True
         
