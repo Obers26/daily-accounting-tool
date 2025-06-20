@@ -77,7 +77,8 @@ def generate_excel_report(start_date, end_date, output_path, db_path='daily_acco
         df_broker.set_index('Date', inplace=True)
         if not df_overall.empty:
             df_overall.set_index('Date', inplace=True)
-            # Add Period Cumulative Return column (will be populated with formulas later)
+            # Add Daily Fund Return and Period Cumulative Return columns (will be populated with formulas later)
+            df_overall['Daily Fund Return'] = 0.0
             df_overall['Period Cumulative Return'] = 0.0
         if not df_other.empty:
             df_other.set_index('Date', inplace=True)
@@ -91,27 +92,31 @@ def generate_excel_report(start_date, end_date, output_path, db_path='daily_acco
                 # Format the Overall sheet
                 worksheet_overall = writer.sheets['Overall']
                 
-                # Freeze the first row (header row)
-                worksheet_overall.freeze_panes = 'A2'
+                # Freeze the first row (header row) and first column (Date column)
+                worksheet_overall.freeze_panes = 'B2'
                 
                 # Set Date column width
                 worksheet_overall.column_dimensions['A'].width = 12
                 
                 # Add Daily Fund Return calculation formula
-                # Formula: Daily Fund Return = (Total P&L / Start of Day Fund Value) 
-                # Use current day's Start of Day Fund Value as denominator
-                for row in range(2, len(df_overall) + 2):  # Start from row 2 (after header and first row)
+                # Formula: Daily Fund Return = (Total P&L / Start Fund Value (NAV + Cum. P&L))
+                # Use Start Fund Value (NAV + Cum. P&L) as denominator
+                for row in range(2, len(df_overall) + 2):  # Start from row 2 (after header)
                     # Get column positions based on actual schema:
-                    # Date (A), Broker P&L (B), Total Broker (C), Other P&L (D), Total Other (E), Total P&L (F), Period Starting NAV (G), Start of Day Fund Value (H), Total Fund Value (I), Daily Fund Return (J), Period Cumulative Return (K)
+                    # Date (A), Broker P&L (B), Total Broker (C), Other P&L (D), Total Other (E), Total P&L (F), 
+                    # Period Starting NAV (G), Start Fund Value (Accounts Total) (H), End Fund Value (Accounts Total) (I), 
+                    # Start Fund Value (NAV + Cum. P&L) (J), End Fund Value (NAV + Cum. P&L) (K), Daily Fund Return (L), Period Cumulative Return (M)
                     total_pl_col = 'F'  # Total P&L column
                     period_starting_nav_col = 'G'  # Period Starting NAV column
-                    start_of_day_fund_value_col = 'H'  # Start of Day Fund Value column
-                    total_fund_value_col = 'I'  # Total Fund Value column
-                    daily_fund_return_col = 'J'  # Daily Fund Return column
-                    period_cumulative_return_col = 'K'  # Period Cumulative Return column
+                    start_fund_value_accounts_col = 'H'  # Start Fund Value (Accounts Total) column
+                    end_fund_value_accounts_col = 'I'  # End Fund Value (Accounts Total) column
+                    start_fund_value_nav_cum_pl_col = 'J'  # Start Fund Value (NAV + Cum. P&L) column
+                    end_fund_value_nav_cum_pl_col = 'K'  # End Fund Value (NAV + Cum. P&L) column
+                    daily_fund_return_col = 'L'  # Daily Fund Return column
+                    period_cumulative_return_col = 'M'  # Period Cumulative Return column
                     
-                    # Use Start of Day Fund Value as denominator for daily return calculation
-                    denominator = f'{start_of_day_fund_value_col}{row}'
+                    # Use Start Fund Value (NAV + Cum. P&L) as denominator for daily return calculation
+                    denominator = f'{start_fund_value_nav_cum_pl_col}{row}'
                     
                     # Add the Daily Fund Return formula 
                     daily_return_cell = f'{daily_fund_return_col}{row}'
@@ -121,22 +126,17 @@ def generate_excel_report(start_date, end_date, output_path, db_path='daily_acco
                     worksheet_overall[daily_return_cell].number_format = '0.00%'
                     
                     # Add the Period Cumulative Return formula
-                    # Formula: Cumulative P&L since last valuation date / Period Starting NAV
+                    # Simplified formula: Cumulative P&L since period start / Period Starting NAV
                     cumulative_return_cell = f'{period_cumulative_return_col}{row}'
                     
                     if row == 2:  # First data row
-                        # Same as Daily Fund Return for the first row
+                        # First row of the period - just current day's P&L / Period Starting NAV
                         worksheet_overall[cumulative_return_cell] = f'=({total_pl_col}{row}/{period_starting_nav_col}{row})'
                     else:
-                        # Check if Period Starting NAV changed from previous day (new valuation date)
-                        current_nav = f'{period_starting_nav_col}{row}'
-                        prev_nav = f'{period_starting_nav_col}{row-1}'
-                        prev_cumulative = f'{period_cumulative_return_col}{row-1}'
-                        
-                        # If NAV changed, reset cumulative return to current day's return
-                        # If NAV same, add current day's P&L to previous cumulative P&L amount
-                        # Formula: IF(NAV changed, current P&L / current NAV, (previous cumulative % * previous NAV + current P&L) / current NAV)
-                        worksheet_overall[cumulative_return_cell] = f'=IF({current_nav}<>{prev_nav},{total_pl_col}{row}/{current_nav},({prev_cumulative}*{prev_nav}+{total_pl_col}{row})/{current_nav})'
+                        # For subsequent rows, sum P&L from period start to current day / Period Starting NAV
+                        # Use SUMIFS to sum P&L where Period Starting NAV equals current Period Starting NAV
+                        # and row number is less than or equal to current row
+                        worksheet_overall[cumulative_return_cell] = f'=SUMIFS({total_pl_col}$2:{total_pl_col}{row},{period_starting_nav_col}$2:{period_starting_nav_col}{row},{period_starting_nav_col}{row})/{period_starting_nav_col}{row}'
                     
                     # Format as percentage with 2 decimal places
                     worksheet_overall[cumulative_return_cell].number_format = '0.00%'

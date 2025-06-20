@@ -1,0 +1,2 @@
+daily_accounting_report.xlsx
+daily_accounting.db

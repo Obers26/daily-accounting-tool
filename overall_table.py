@@ -44,13 +44,14 @@ def build_overall_table(db_path: str = "daily_accounting.db") -> None:
     The table schema is created if it does not yet exist.  This routine will:
     1. Pull daily records from the `broker` table (Date, P&L, Total Broker).
     2. Aggregate `Amount` from `other_transactions` for each date (can be zero).
-    3. Compute Total Fund Value = Total Broker + SUM(Amount).
+    3. Compute End Fund Value (Accounts Total) = Total Broker + SUM(Amount).
     4. Determine the Period Starting NAV according to valuation-date rules.
        * A valuation date is the first occurrence of each month in the database 
          OR a date listed in the `valuation_dates` table (managed by the user).
-       * The Period Starting NAV for a valuation period is the Start of Day Fund
-         Value recorded on the valuation date.
-    5. Compute Daily Fund Return = (P&L / Start of Day Fund Value) * 100.
+       * The Period Starting NAV for a valuation period is the Start Fund Value (Accounts Total)
+         recorded on the valuation date.
+    5. Compute Start Fund Value (NAV + Cum. P&L) = Period Starting NAV + cumulative P&L since last valuation date.
+    6. Compute End Fund Value (NAV + Cum. P&L) = Start Fund Value (NAV + Cum. P&L) + current day's Total P&L.
 
     The resulting data are stored in (and replace existing rows of) the
     `overall` table with schema:
@@ -61,9 +62,10 @@ def build_overall_table(db_path: str = "daily_accounting.db") -> None:
         "Total Other" REAL,
         "Total P&L" REAL,
         "Period Starting NAV" REAL,
-        "Start of Day Fund Value" REAL,
-        "Total Fund Value" REAL,
-        "Daily Fund Return" REAL
+        "Start Fund Value (Accounts Total)" REAL,
+        "End Fund Value (Accounts Total)" REAL,
+        "Start Fund Value (NAV + Cum. P&L)" REAL,
+        "End Fund Value (NAV + Cum. P&L)" REAL
     """
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
@@ -88,9 +90,10 @@ def build_overall_table(db_path: str = "daily_accounting.db") -> None:
             "Total Other" REAL,
             "Total P&L" REAL,
             "Period Starting NAV" REAL,
-            "Start of Day Fund Value" REAL,
-            "Total Fund Value" REAL,
-            "Daily Fund Return" REAL
+            "Start Fund Value (Accounts Total)" REAL,
+            "End Fund Value (Accounts Total)" REAL,
+            "Start Fund Value (NAV + Cum. P&L)" REAL,
+            "End Fund Value (NAV + Cum. P&L)" REAL
         )
         """
     )
@@ -178,8 +181,12 @@ def build_overall_table(db_path: str = "daily_accounting.db") -> None:
     # Iterate and compute --------------------------------------------------------------------
     results = []  # list of tuples for all the columns
     period_start_nav = None  # will be updated when we hit valuation dates
-    prev_total_fund_value = None  # needed for calculating start of day fund value
+    prev_end_fund_value_accounts = None  # needed for calculating start fund value (accounts total)
     prev_date_str = None  # track previous date for overnight calculations
+    
+    # Track cumulative P&L since last valuation date for NAV + Cum. P&L calculations
+    cumulative_pl_since_valuation = 0.0
+    last_valuation_date_idx = None
 
     for idx, (date_str, broker_pl, total_broker) in enumerate(broker_rows):
         # Get other transaction data
@@ -190,35 +197,40 @@ def build_overall_table(db_path: str = "daily_accounting.db") -> None:
         # Calculate totals
         total_pl = (broker_pl or 0.0) + other_pl
         
-        # Calculate Total Fund Value: Total Broker + Total Other - overnight transactions today
-        total_fund_value = (total_broker or 0.0) + total_other - overnight_today
+        # Calculate End Fund Value (Accounts Total): Total Broker + Total Other - overnight transactions today
+        end_fund_value_accounts = (total_broker or 0.0) + total_other - overnight_today
 
         date_obj = _parse_date(date_str)
 
-        # Calculate Start of Day Fund Value
+        # Calculate Start Fund Value (Accounts Total)
         # Use valuation fund value if specified, otherwise calculate based on previous day
         if date_str in valuation_fund_values:
-            start_of_day_fund_value = valuation_fund_values[date_str]
+            start_fund_value_accounts = valuation_fund_values[date_str]
         else:
-            if prev_total_fund_value is not None and prev_date_str is not None:
-                # Previous day's Total Fund Value + previous day's overnight transactions
+            if prev_end_fund_value_accounts is not None and prev_date_str is not None:
+                # Previous day's End Fund Value (Accounts Total) + previous day's overnight transactions
                 prev_overnight = overnight_amounts.get(prev_date_str, 0.0)
-                start_of_day_fund_value = prev_total_fund_value + prev_overnight
+                start_fund_value_accounts = prev_end_fund_value_accounts + prev_overnight
             else:
                 # First day or no previous data
-                start_of_day_fund_value = total_fund_value
+                start_fund_value_accounts = end_fund_value_accounts
 
-        # If today is a valuation date => update period_start_nav using this day's start of day fund value
+        # If today is a valuation date => update period_start_nav and reset cumulative P&L
         if _is_valuation_date(date_obj, extra_vals, first_month_dates):
-            period_start_nav = start_of_day_fund_value
+            period_start_nav = start_fund_value_accounts
+            cumulative_pl_since_valuation = 0.0
+            last_valuation_date_idx = idx
 
-        # Compute daily fund return using Total P&L and Start of Day Fund Value
-        daily_return = None
-        if start_of_day_fund_value not in (None, 0):
-            try:
-                daily_return = total_pl / start_of_day_fund_value * 100.0
-            except ZeroDivisionError:
-                daily_return = None
+        # Calculate Start Fund Value (NAV + Cum. P&L)
+        # This is Period Starting NAV + cumulative P&L from last valuation date to previous day
+        start_fund_value_nav_cum_pl = period_start_nav + cumulative_pl_since_valuation if period_start_nav is not None else None
+        
+        # Calculate End Fund Value (NAV + Cum. P&L)
+        # This is Start Fund Value (NAV + Cum. P&L) + current day's Total P&L
+        end_fund_value_nav_cum_pl = start_fund_value_nav_cum_pl + total_pl if start_fund_value_nav_cum_pl is not None else None
+        
+        # Update cumulative P&L for next iteration (add current day's P&L)
+        cumulative_pl_since_valuation += total_pl
 
         results.append(
             (
@@ -229,22 +241,23 @@ def build_overall_table(db_path: str = "daily_accounting.db") -> None:
                 total_other if total_other is not None else None,
                 total_pl if total_pl is not None else None,
                 period_start_nav if period_start_nav is not None else None,
-                start_of_day_fund_value if start_of_day_fund_value is not None else None,
-                total_fund_value if total_fund_value is not None else None,
-                daily_return if daily_return is not None else None,
+                start_fund_value_accounts if start_fund_value_accounts is not None else None,
+                end_fund_value_accounts if end_fund_value_accounts is not None else None,
+                start_fund_value_nav_cum_pl if start_fund_value_nav_cum_pl is not None else None,
+                end_fund_value_nav_cum_pl if end_fund_value_nav_cum_pl is not None else None,
             )
         )
 
         # Update previous values for next iteration
-        prev_total_fund_value = total_fund_value
+        prev_end_fund_value_accounts = end_fund_value_accounts
         prev_date_str = date_str
 
     # Clear and insert -----------------------------------------------------------------------
     cur.execute("DELETE FROM overall")
     cur.executemany(
         """
-        INSERT INTO overall ("Date", "Broker P&L", "Total Broker", "Other P&L", "Total Other", "Total P&L", "Period Starting NAV", "Start of Day Fund Value", "Total Fund Value", "Daily Fund Return")
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO overall ("Date", "Broker P&L", "Total Broker", "Other P&L", "Total Other", "Total P&L", "Period Starting NAV", "Start Fund Value (Accounts Total)", "End Fund Value (Accounts Total)", "Start Fund Value (NAV + Cum. P&L)", "End Fund Value (NAV + Cum. P&L)")
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         results,
     )
