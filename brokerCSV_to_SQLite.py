@@ -103,24 +103,24 @@ def process_file(file_path):
         
         # Calculate P&L using two methods
         pnl_method1 = None  # Sum of components method
-        pnl_method2 = None  # Traditional method: ending - starting - deposits/withdrawals
+        pnl_method2 = None  # ending - starting - deposits/withdrawals
         
         # Method 1: Sum of P&L components (treat None/blank as 0)
         components = [
             fields.get('Mark-to-Market') or 0,
             fields.get('Change in Interest Accruals') or 0, 
             fields.get('Change in Dividend Accruals') or 0,
-            fields.get('Commissions') or 0
+            fields.get('Commissions') or 0,
+            fields.get('Interest') or 0,
+            fields.get('Dividends') or 0
         ]
         
         # Calculate method 1 (always possible now since None values become 0)
         pnl_method1 = sum(components)
         
-        # Method 2: Traditional calculation (subtract interest and dividends too)
+        # Method 2: end - start - deposits/withdrawals
         if starting_value is not None and ending_value is not None:
-            interest = fields.get('Interest') or 0
-            dividends = fields.get('Dividends') or 0
-            pnl_method2 = ending_value - starting_value - deposits_withdrawals - interest - dividends
+            pnl_method2 = ending_value - starting_value - deposits_withdrawals
         
         # Compare methods and detect discrepancies
         pnl_discrepancy = False
@@ -153,6 +153,45 @@ def process_file(file_path):
         else:
             # Neither method available
             print(f"Error: Could not calculate P&L for {date} - insufficient data")
+        
+        # Check for accrual discrepancies
+        accrual_tolerance = 0.10  # 10% tolerance for accrual discrepancies
+        
+        # Check Interest vs Change in Interest Accruals
+        if fields.get('Interest') is not None and fields.get('Interest') != 0:
+            interest_val = fields['Interest']
+            interest_accrual = fields.get('Change in Interest Accruals') or 0
+            
+            # The negative of the change in accruals should match the actual transaction
+            expected_accrual = -interest_val
+            
+            if interest_accrual != 0:  # Only check if there's an accrual change
+                discrepancy_ratio = abs(interest_accrual - expected_accrual) / abs(interest_val)
+                
+                if discrepancy_ratio > accrual_tolerance:
+                    print(f"INTEREST ACCRUAL DISCREPANCY DETECTED for {date}:")
+                    print(f"  Interest Transaction: ${interest_val:.2f}")
+                    print(f"  Change in Interest Accruals: ${interest_accrual:.2f}")
+                    print(f"  Expected Accrual Change: ${expected_accrual:.2f}")
+                    print(f"  Discrepancy: {discrepancy_ratio:.1%} (>{accrual_tolerance:.0%} threshold)")
+        
+        # Check Dividends vs Change in Dividend Accruals
+        if fields.get('Dividends') is not None and fields.get('Dividends') != 0:
+            dividend_val = fields['Dividends']
+            dividend_accrual = fields.get('Change in Dividend Accruals') or 0
+            
+            # The negative of the change in accruals should match the actual transaction
+            expected_accrual = -dividend_val
+            
+            if dividend_accrual != 0:  # Only check if there's an accrual change
+                discrepancy_ratio = abs(dividend_accrual - expected_accrual) / abs(dividend_val)
+                
+                if discrepancy_ratio > accrual_tolerance:
+                    print(f"DIVIDEND ACCRUAL DISCREPANCY DETECTED for {date}:")
+                    print(f"  Dividend Transaction: ${dividend_val:.2f}")
+                    print(f"  Change in Dividend Accruals: ${dividend_accrual:.2f}")
+                    print(f"  Expected Accrual Change: ${expected_accrual:.2f}")
+                    print(f"  Discrepancy: {discrepancy_ratio:.1%} (>{accrual_tolerance:.0%} threshold)")
         
         return fields
         

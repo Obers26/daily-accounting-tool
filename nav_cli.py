@@ -17,7 +17,7 @@ import csv
 import brokerCSV_to_SQLite
 import otherCSV_to_SQLite
 import valuationCSV_to_SQLite
-from Excel_Report_Generator import generate_excel_report
+from Excel_Report_Generator import ExcelReportGenerator
 import overall_table
 import valuation_discrepancy_fixer
 
@@ -167,8 +167,9 @@ def generate_report(args):
     print(f"Database: {args.database}")
     print(f"Output file: {args.output}")
     
-    # Generate the report using the existing function
-    success, result = generate_excel_report(args.start_date, args.end_date, args.output, args.database)
+    # Generate the report using the ExcelReportGenerator class
+    generator = ExcelReportGenerator(args.database)
+    success, result = generator.generate_excel_report(args.start_date, args.end_date, args.output)
     if success:
         print(f"✓ Excel report generated successfully: {result}")
         return True
