@@ -13,12 +13,12 @@ from datetime import datetime
 import sqlite3
 import csv
 
-# Import functions from existing modules
-import brokerCSV_to_SQLite
-import otherCSV_to_SQLite
-import valuationCSV_to_SQLite
+# Import processor classes from existing modules
+from brokerCSV_to_SQLite import BrokerCSVProcessor
+from otherCSV_to_SQLite import OtherCSVProcessor
+from valuationCSV_to_SQLite import ValuationCSVProcessor
 from Excel_Report_Generator import ExcelReportGenerator
-import overall_table
+from overall_table import OverallTableManager
 import valuation_discrepancy_fixer
 
 def validate_date(date_string):
@@ -42,7 +42,9 @@ def load_broker_csv(args):
     print(f"Loading broker CSV file: {args.csv_file}")
     print(f"Database: {args.database}")
     
-    success, message = brokerCSV_to_SQLite.update_database(args.csv_file, args.database)
+    # Use the class-based approach
+    processor = BrokerCSVProcessor(args.database)
+    success, message = processor.update_database(args.csv_file)
     if success:
         print(f"✓ {message}")
         return True
@@ -63,7 +65,9 @@ def load_broker_folder(args):
     print(f"Loading broker CSV files from folder: {args.csv_folder}")
     print(f"Database: {args.database}")
     
-    success, message = brokerCSV_to_SQLite.process_all_files(args.csv_folder, args.database)
+    # Use the class-based approach
+    processor = BrokerCSVProcessor(args.database)
+    success, message = processor.process_all_files(args.csv_folder)
     if success:
         print(f"✓ {message}")
         return True
@@ -84,7 +88,9 @@ def load_other_csv(args):
     print(f"Loading other transactions CSV file: {args.csv_file}")
     print(f"Database: {args.database}")
     
-    success, message = otherCSV_to_SQLite.update_database(args.csv_file, args.database)
+    # Use the class-based approach
+    processor = OtherCSVProcessor(args.database)
+    success, message = processor.update_database(args.csv_file)
     if success:
         print(f"✓ {message}")
         return True
@@ -105,7 +111,9 @@ def load_other_folder(args):
     print(f"Loading other transactions CSV files from folder: {args.csv_folder}")
     print(f"Database: {args.database}")
     
-    success, message = otherCSV_to_SQLite.process_all_files(args.csv_folder, args.database)
+    # Use the class-based approach
+    processor = OtherCSVProcessor(args.database)
+    success, message = processor.process_all_files(args.csv_folder)
     if success:
         print(f"✓ {message}")
         return True
@@ -126,11 +134,14 @@ def load_valuation_csv(args):
     print(f"Loading valuation dates CSV file: {args.csv_file}")
     print(f"Database: {args.database}")
     
-    success, message = valuationCSV_to_SQLite.update_database(args.csv_file, args.database)
+    # Use the class-based approach
+    processor = ValuationCSVProcessor(args.database)
+    success, message = processor.update_database(args.csv_file)
     if success:
         print(f"✓ {message}")
         print("Rebuilding overall table to apply new valuation dates...")
-        overall_table.build_overall_table(args.database)
+        overall_table_manager = OverallTableManager(args.database)
+        overall_table_manager.build_overall_table()
         print("✓ Overall table updated successfully.")
         return True
     else:
@@ -190,56 +201,18 @@ def add_valuation_date(args):
         print("Run broker or other load commands first to create the database.")
         return False
     
-    try:
-        # Connect to database
-        conn = sqlite3.connect(args.database)
-        cursor = conn.cursor()
-        
-        # Create valuation_dates table if it doesn't exist
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS valuation_dates (
-                "Date" TEXT PRIMARY KEY,
-                "Fund Value" REAL
-            )
-        ''')
-        
-        # Check if date already exists
-        cursor.execute('SELECT "Date", "Fund Value" FROM valuation_dates WHERE "Date" = ?', (args.date,))
-        existing_row = cursor.fetchone()
-        
-        if existing_row:
-            # Date exists, check if we need to update fund value
-            if args.amount is not None:
-                cursor.execute('UPDATE valuation_dates SET "Fund Value" = ? WHERE "Date" = ?', (args.amount, args.date))
-                conn.commit()
-                print(f"✓ Updated valuation date '{args.date}' with fund value: ${args.amount:,.2f}")
-            else:
-                print(f"Date '{args.date}' is already in the valuation dates list.")
-                if existing_row[1] is not None:
-                    print(f"  Current fund value: ${existing_row[1]:,.2f}")
-                conn.close()
-                return True
-        else:
-            # Insert the new valuation date
-            cursor.execute('INSERT INTO valuation_dates ("Date", "Fund Value") VALUES (?, ?)', (args.date, args.amount))
-            conn.commit()
-            
-            if args.amount is not None:
-                print(f"✓ Added '{args.date}' to valuation dates list with fund value: ${args.amount:,.2f}")
-            else:
-                print(f"✓ Added '{args.date}' to valuation dates list.")
-        
-        conn.close()
-        
-        # Rebuild overall table to reflect the new valuation date
+    # Use the class-based approach
+    processor = ValuationCSVProcessor(args.database)
+    success, message = processor.add_valuation_date(args.date, args.amount)
+    if success:
+        print(f"✓ {message}")
         print("Rebuilding overall table to apply new valuation date...")
-        overall_table.build_overall_table(args.database)
+        overall_table_manager = OverallTableManager(args.database)
+        overall_table_manager.build_overall_table()
         print("✓ Overall table updated successfully.")
-        
         return True
-        
-    except Exception as e:
-        print(f"✗ Error adding valuation date: {str(e)}")
+    else:
+        print(f"✗ {message}")
         return False
 
 def list_valuation_dates(args):
@@ -250,43 +223,14 @@ def list_valuation_dates(args):
         print("Run broker or other load commands first to create the database.")
         return False
     
-    try:
-        # Connect to database
-        conn = sqlite3.connect(args.database)
-        cursor = conn.cursor()
-        
-        # Check if table exists and get dates
-        cursor.execute('''
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND name='valuation_dates'
-        ''')
-        
-        if not cursor.fetchone():
-            print("No custom valuation dates have been added yet.")
-            print("Note: The 1st of every month is automatically a valuation date.")
-            conn.close()
-            return True
-        
-        cursor.execute('SELECT "Date", "Fund Value" FROM valuation_dates ORDER BY "Date"')
-        dates = cursor.fetchall()
-        conn.close()
-        
-        if not dates:
-            print("No custom valuation dates have been added yet.")
-            print("Note: The 1st of every month is automatically a valuation date.")
-        else:
-            print("Custom valuation dates:")
-            for date_row in dates:
-                if date_row[1] is not None:
-                    print(f"  • {date_row[0]} (Fund Value: ${date_row[1]:,.2f})")
-                else:
-                    print(f"  • {date_row[0]}")
-            print("\nNote: The 1st of every month is also automatically a valuation date.")
-        
+    # Use the class-based approach
+    processor = ValuationCSVProcessor(args.database)
+    success, message = processor.list_valuation_dates()
+    if success:
+        print(message)
         return True
-        
-    except Exception as e:
-        print(f"✗ Error listing valuation dates: {str(e)}")
+    else:
+        print(f"✗ {message}")
         return False
 
 def delete_table(args):
@@ -358,56 +302,26 @@ def delete_valuation_date(args):
         print("Run broker or other load commands first to create the database.")
         return False
     
-    try:
-        # Connect to database
-        conn = sqlite3.connect(args.database)
-        cursor = conn.cursor()
-        
-        # Check if valuation_dates table exists
-        cursor.execute('''
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND name='valuation_dates'
-        ''')
-        
-        if not cursor.fetchone():
-            print("No custom valuation dates table exists.")
-            conn.close()
+    # Confirm deletion unless --force flag is used
+    if not args.force:
+        response = input(f"Are you sure you want to delete the valuation date '{args.date}'? This action cannot be undone. (y/N): ")
+        if response.lower() not in ['y', 'yes']:
+            print("Valuation date deletion cancelled.")
             return True
-        
-        # Check if the date exists
-        cursor.execute('SELECT "Date", "Fund Value" FROM valuation_dates WHERE "Date" = ?', (args.date,))
-        existing_row = cursor.fetchone()
-        
-        if not existing_row:
-            print(f"Valuation date '{args.date}' not found in the database.")
-            conn.close()
-            return True
-        
-        # Confirm deletion unless --force flag is used
-        if not args.force:
-            fund_value_text = f" (Fund Value: ${existing_row[1]:,.2f})" if existing_row[1] is not None else ""
-            response = input(f"Are you sure you want to delete the valuation date '{args.date}'{fund_value_text}? This action cannot be undone. (y/N): ")
-            if response.lower() not in ['y', 'yes']:
-                print("Valuation date deletion cancelled.")
-                conn.close()
-                return True
-        
-        # Delete the valuation date
-        cursor.execute('DELETE FROM valuation_dates WHERE "Date" = ?', (args.date,))
-        conn.commit()
-        conn.close()
-        
-        print(f"✓ Valuation date '{args.date}' has been deleted successfully.")
-        
-        # Rebuild overall table to reflect the change
-        print("Updating overall table...")
-        overall_table.build_overall_table(args.database)
-        print("✓ Overall table updated successfully.")
-        
+    
+    # Use the class-based approach
+    processor = ValuationCSVProcessor(args.database)
+    success, message = processor.delete_valuation_date(args.date)
+    if success:
+        print(f"✓ {message}")
+        if "deleted successfully" in message:
+            print("Updating overall table...")
+            overall_table_manager = OverallTableManager(args.database)
+            overall_table_manager.build_overall_table()
+            print("✓ Overall table updated successfully.")
         return True
-        
-    except Exception as e:
-        print(f"✗ Error deleting valuation date: {str(e)}")
+    else:
+        print(f"✗ {message}")
         return False
 
 def add_other_transaction(args):
@@ -417,7 +331,7 @@ def add_other_transaction(args):
         print(f"Error: Invalid date format '{args.date}'. Use MM/DD/YYYY format.")
         return False
     
-    # Check if database exists, if not cr.\aceate it
+    # Check if database exists, if not create it
     if not os.path.exists(args.database):
         print(f"Creating new database: {args.database}")
     
@@ -486,7 +400,8 @@ def add_other_transaction(args):
         
         # Rebuild overall table to reflect the new transaction
         print("Updating overall table...")
-        overall_table.build_overall_table(args.database)
+        overall_table_manager = OverallTableManager(args.database)
+        overall_table_manager.build_overall_table()
         print("✓ Overall table updated successfully.")
         
         return True
